@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SoccerCoach Support</title>
+  <meta
+    name="description"
+    content="Support page for the SoccerCoach iPhone app."
+  >
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body class="policy-page">
+  <header class="site-header">
+    <div class="wrap header-bar">
+      <a class="brand" href="./index.html">SoccerCoach</a>
+      <nav class="nav">
+        <a href="./index.html">Home</a>
+        <a href="./support.html">Support</a>
+        <a href="./privacy.html">Privacy Policy</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="section">
+    <div class="wrap policy-wrap">
+      <p class="eyebrow">Support</p>
+      <h1>Get Help With SoccerCoach</h1>
+      <p class="policy-meta">Questions, bug reports, and feedback all go straight to the developer.</p>
+
+      <div class="policy-card">
+        <p>
+          Use the form below and your device will open a prefilled email to
+          <a class="text-link" href="mailto:evanworth@gmail.com">evanworth@gmail.com</a>.
+        </p>
+
+        <form id="support-form" class="support-form">
+          <label class="form-field">
+            <span>Your name</span>
+            <input type="text" name="name" autocomplete="name" placeholder="Coach name">
+          </label>
+
+          <label class="form-field">
+            <span>Your email</span>
+            <input type="email" name="email" autocomplete="email" placeholder="you@example.com">
+          </label>
+
+          <label class="form-field">
+            <span>Topic</span>
+            <select name="topic">
+              <option>General question</option>
+              <option>Bug report</option>
+              <option>Billing issue</option>
+              <option>Feature request</option>
+            </select>
+          </label>
+
+          <label class="form-field">
+            <span>Message</span>
+            <textarea name="message" rows="8" placeholder="Tell me what happened or what you need help with."></textarea>
+          </label>
+
+          <button class="button button-primary" type="submit">Email Support</button>
+        </form>
+
+        <p class="small-note">
+          If your browser does not open an email app automatically, send a message directly to
+          <a class="text-link" href="mailto:evanworth@gmail.com">evanworth@gmail.com</a>.
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-bar">
+      <p>© 2026 SoccerCoach</p>
+      <div class="footer-links">
+        <a href="./index.html">Home</a>
+        <a href="./support.html">Support</a>
+        <a href="./privacy.html">Privacy Policy</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const form = document.getElementById("support-form");
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+
+      const formData = new FormData(form);
+      const name = (formData.get("name") || "").toString().trim();
+      const email = (formData.get("email") || "").toString().trim();
+      const topic = (formData.get("topic") || "Support request").toString().trim();
+      const message = (formData.get("message") || "").toString().trim();
+
+      const subject = encodeURIComponent(`SoccerCoach Support: ${topic}`);
+      const body = encodeURIComponent(
+        `Name: ${name}\nEmail: ${email}\nTopic: ${topic}\n\nMessage:\n${message}`
+      );
+
+      window.location.href = `mailto:evanworth@gmail.com?subject=${subject}&body=${body}`;
+    });
+  </script>
+</body>
+</html>
