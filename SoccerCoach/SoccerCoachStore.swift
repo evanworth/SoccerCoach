@@ -1,10 +1,5 @@
 import Foundation
-import AuthenticationServices
-import CryptoKit
-import PhotosUI
-import StoreKit
 import SwiftUI
-import UIKit
 
 struct SuggestedSubstitution: Identifiable, Hashable {
     let id = UUID()
@@ -15,507 +10,18 @@ struct SuggestedSubstitution: Identifiable, Hashable {
     let reason: String
 }
 
-private let defaultSevenVSevenPositions: [String] = [
-    "Goalie",
-    "Left Defense",
-    "Right Defense",
-    "Left Midfield",
-    "Center Midfield",
-    "Right Midfield",
-    "Forward",
-]
-
-private enum SoccerCoachAccessConfig {
-    static let googleClientID = "REPLACE_WITH_GOOGLE_CLIENT_ID"
-    static let googleRedirectScheme = "soccercoach"
-    static let googleRedirectHost = "oauth"
-    static let annualSubscriptionProductID = "com.evanworth.SoccerCoach.pro.yearly"
-
-    static var googleIsConfigured: Bool {
-        !googleClientID.contains("REPLACE_WITH")
-    }
+private enum PositionFamily: Int {
+    case goalie = 0
+    case defense = 1
+    case midfield = 2
+    case forward = 3
+    case other = 4
 }
 
-private struct PersistedAccessState: Codable {
-    var account: CoachAccount?
-}
-
-private struct GoogleTokenResponse: Decodable {
-    var access_token: String
-    var id_token: String?
-}
-
-private struct AppleSignInPayload {
-    var email: String
-    var displayName: String
-}
-
-@MainActor
-final class AccessController: NSObject, ObservableObject {
-    @Published var signedInAccount: CoachAccount?
-    @Published var hasActiveSubscription = false
-    @Published var subscriptionProduct: Product?
-    @Published var isWorking = false
-    @Published var statusMessage = ""
-    @Published var lastErrorMessage: String?
-
-    private let saveURL: URL
-    private var transactionListener: Task<Void, Never>?
-    private var googleSession: ASWebAuthenticationSession?
-
-    override init() {
-        self.saveURL = Self.makeSaveURL()
-        if
-            let savedData = try? Data(contentsOf: saveURL),
-            let decoded = try? JSONDecoder().decode(PersistedAccessState.self, from: savedData)
-        {
-            self.signedInAccount = decoded.account
-        } else {
-            self.signedInAccount = nil
-        }
-        super.init()
-
-        transactionListener = listenForTransactions()
-
-        Task {
-            await refreshProducts()
-            await refreshSubscriptionStatus()
-        }
-    }
-
-    deinit {
-        transactionListener?.cancel()
-    }
-
-    var requiresAccessSetup: Bool {
-        !SoccerCoachAccessConfig.googleIsConfigured || subscriptionProduct == nil
-    }
-
-    var annualPriceLabel: String {
-        subscriptionProduct?.displayPrice ?? "$10.00/year"
-    }
-
-    func signInWithGoogle() async {
-        guard SoccerCoachAccessConfig.googleIsConfigured else {
-            lastErrorMessage = "Add your Google OAuth client ID and redirect URL first. The button is wired, but it still needs your Google Cloud setup."
-            return
-        }
-
-        isWorking = true
-        lastErrorMessage = nil
-        defer { isWorking = false }
-
-        do {
-            let verifier = Self.randomString(length: 64)
-            let challenge = Self.codeChallenge(for: verifier)
-            let state = UUID().uuidString
-            let redirectURI = "\(SoccerCoachAccessConfig.googleRedirectScheme)://\(SoccerCoachAccessConfig.googleRedirectHost)"
-
-            var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
-            components.queryItems = [
-                URLQueryItem(name: "client_id", value: SoccerCoachAccessConfig.googleClientID),
-                URLQueryItem(name: "redirect_uri", value: redirectURI),
-                URLQueryItem(name: "response_type", value: "code"),
-                URLQueryItem(name: "scope", value: "openid email profile"),
-                URLQueryItem(name: "code_challenge", value: challenge),
-                URLQueryItem(name: "code_challenge_method", value: "S256"),
-                URLQueryItem(name: "state", value: state),
-                URLQueryItem(name: "prompt", value: "select_account"),
-            ]
-
-            let callbackURL = try await startGoogleSession(
-                authURL: components.url!,
-                callbackScheme: SoccerCoachAccessConfig.googleRedirectScheme
-            )
-
-            guard let urlComponents = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false) else {
-                throw AccessError.invalidCallback
-            }
-
-            let returnedState = urlComponents.queryItems?.first(where: { $0.name == "state" })?.value
-            guard returnedState == state else {
-                throw AccessError.invalidState
-            }
-
-            if let error = urlComponents.queryItems?.first(where: { $0.name == "error" })?.value {
-                throw AccessError.providerError(error)
-            }
-
-            guard let code = urlComponents.queryItems?.first(where: { $0.name == "code" })?.value else {
-                throw AccessError.missingAuthorizationCode
-            }
-
-            let tokenResponse = try await exchangeGoogleCodeForTokens(
-                code: code,
-                codeVerifier: verifier,
-                redirectURI: redirectURI
-            )
-            let account = try Self.accountFromGoogleToken(tokenResponse.id_token)
-            signedInAccount = account
-            save()
-            statusMessage = "Signed in as \(account.displayName)."
-        } catch {
-            lastErrorMessage = error.localizedDescription
-        }
-    }
-
-    func signInWithApple() async {
-        isWorking = true
-        lastErrorMessage = nil
-        defer { isWorking = false }
-
-        do {
-            let payload = try await startAppleSignIn()
-            let account = CoachAccount(
-                provider: "Apple",
-                email: payload.email,
-                displayName: payload.displayName
-            )
-            signedInAccount = account
-            save()
-            statusMessage = "Signed in as \(account.displayName)."
-        } catch {
-            lastErrorMessage = error.localizedDescription
-        }
-    }
-
-    func purchaseAnnualSubscription() async {
-        guard let subscriptionProduct else {
-            lastErrorMessage = "The yearly subscription product is not available yet. Add it in App Store Connect and try again."
-            return
-        }
-
-        isWorking = true
-        lastErrorMessage = nil
-        defer { isWorking = false }
-
-        do {
-            let result = try await subscriptionProduct.purchase()
-            switch result {
-            case .success(let verificationResult):
-                let transaction = try Self.checkVerified(verificationResult)
-                await refreshSubscriptionStatus()
-                await transaction.finish()
-                statusMessage = "Your yearly plan is active."
-            case .userCancelled:
-                break
-            case .pending:
-                statusMessage = "Purchase is pending approval."
-            @unknown default:
-                lastErrorMessage = "The purchase did not complete."
-            }
-        } catch {
-            lastErrorMessage = error.localizedDescription
-        }
-    }
-
-    func restorePurchases() async {
-        isWorking = true
-        lastErrorMessage = nil
-        defer { isWorking = false }
-
-        do {
-            try await AppStore.sync()
-            await refreshSubscriptionStatus()
-            if hasActiveSubscription {
-                statusMessage = "Your subscription was restored."
-            }
-        } catch {
-            lastErrorMessage = error.localizedDescription
-        }
-    }
-
-    func refreshProducts() async {
-        do {
-            let products = try await Product.products(for: [SoccerCoachAccessConfig.annualSubscriptionProductID])
-            subscriptionProduct = products.first
-        } catch {
-            lastErrorMessage = error.localizedDescription
-        }
-    }
-
-    func refreshSubscriptionStatus() async {
-        var isActive = false
-
-        for await entitlement in Transaction.currentEntitlements {
-            guard
-                let transaction = try? Self.checkVerified(entitlement),
-                transaction.productID == SoccerCoachAccessConfig.annualSubscriptionProductID,
-                transaction.revocationDate == nil,
-                (transaction.expirationDate ?? .distantFuture) > .now
-            else { continue }
-
-            isActive = true
-            break
-        }
-
-        hasActiveSubscription = isActive
-    }
-
-    func signOut() {
-        signedInAccount = nil
-        hasActiveSubscription = false
-        statusMessage = ""
-        lastErrorMessage = nil
-        save()
-    }
-
-    private func startGoogleSession(authURL: URL, callbackScheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(
-                url: authURL,
-                callbackURLScheme: callbackScheme
-            ) { [weak self] callbackURL, error in
-                self?.googleSession = nil
-
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-
-                guard let callbackURL else {
-                    continuation.resume(throwing: AccessError.invalidCallback)
-                    return
-                }
-
-                continuation.resume(returning: callbackURL)
-            }
-
-            session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = true
-            googleSession = session
-
-            if !session.start() {
-                googleSession = nil
-                continuation.resume(throwing: AccessError.unableToStartSession)
-            }
-        }
-    }
-
-    private func exchangeGoogleCodeForTokens(code: String, codeVerifier: String, redirectURI: String) async throws -> GoogleTokenResponse {
-        var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-
-        let bodyItems = [
-            URLQueryItem(name: "client_id", value: SoccerCoachAccessConfig.googleClientID),
-            URLQueryItem(name: "grant_type", value: "authorization_code"),
-            URLQueryItem(name: "code", value: code),
-            URLQueryItem(name: "redirect_uri", value: redirectURI),
-            URLQueryItem(name: "code_verifier", value: codeVerifier),
-        ]
-
-        var components = URLComponents()
-        components.queryItems = bodyItems
-        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, 200..<300 ~= httpResponse.statusCode else {
-            throw AccessError.tokenExchangeFailed
-        }
-
-        return try JSONDecoder().decode(GoogleTokenResponse.self, from: data)
-    }
-
-    private func startAppleSignIn() async throws -> AppleSignInPayload {
-        try await withCheckedThrowingContinuation { continuation in
-            let request = ASAuthorizationAppleIDProvider().createRequest()
-            request.requestedScopes = [.fullName, .email]
-
-            let controller = ASAuthorizationController(authorizationRequests: [request])
-            let delegate = AppleSignInDelegate { result in
-                continuation.resume(with: result)
-            }
-
-            objc_setAssociatedObject(controller, "appleDelegate", delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-            controller.delegate = delegate
-            controller.presentationContextProvider = delegate
-            controller.performRequests()
-        }
-    }
-
-    private func save() {
-        let payload = PersistedAccessState(account: signedInAccount)
-
-        do {
-            let folder = saveURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let encoded = try JSONEncoder().encode(payload)
-            try encoded.write(to: saveURL, options: .atomic)
-        } catch {
-            print("Failed to save SoccerCoach access data: \(error)")
-        }
-    }
-
-    private func listenForTransactions() -> Task<Void, Never> {
-        Task.detached { [weak self] in
-            for await result in Transaction.updates {
-                if let transaction = try? AccessController.checkVerified(result) {
-                    await transaction.finish()
-                }
-                await self?.refreshSubscriptionStatus()
-            }
-        }
-    }
-
-    nonisolated private static func makeSaveURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return base
-            .appendingPathComponent("SoccerCoach", isDirectory: true)
-            .appendingPathComponent("soccercoach-access.json")
-    }
-
-    nonisolated private static func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
-        switch result {
-        case .verified(let safe):
-            return safe
-        case .unverified:
-            throw AccessError.unverifiedTransaction
-        }
-    }
-
-    nonisolated private static func accountFromGoogleToken(_ idToken: String?) throws -> CoachAccount {
-        guard
-            let idToken,
-            let payload = decodeJWTPayload(idToken),
-            let email = payload["email"] as? String
-        else {
-            throw AccessError.missingIdentity
-        }
-
-        let displayName = (payload["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return CoachAccount(
-            provider: "Google",
-            email: email,
-            displayName: displayName?.isEmpty == false ? displayName! : email
-        )
-    }
-
-    nonisolated private static func decodeJWTPayload(_ token: String) -> [String: Any]? {
-        let segments = token.split(separator: ".")
-        guard segments.count >= 2 else { return nil }
-
-        var base64 = String(segments[1])
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-
-        let padding = 4 - (base64.count % 4)
-        if padding < 4 {
-            base64 += String(repeating: "=", count: padding)
-        }
-
-        guard
-            let data = Data(base64Encoded: base64),
-            let object = try? JSONSerialization.jsonObject(with: data),
-            let payload = object as? [String: Any]
-        else {
-            return nil
-        }
-
-        return payload
-    }
-
-    nonisolated private static func codeChallenge(for verifier: String) -> String {
-        let digest = SHA256.hash(data: Data(verifier.utf8))
-        return Data(digest).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
-    nonisolated private static func randomString(length: Int) -> String {
-        let charset = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
-        return String((0..<length).compactMap { _ in charset.randomElement() })
-    }
-}
-
-extension AccessController: ASWebAuthenticationPresentationContextProviding {
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
-    }
-}
-
-private final class AppleSignInDelegate: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-    let completion: (Result<AppleSignInPayload, Error>) -> Void
-
-    init(completion: @escaping (Result<AppleSignInPayload, Error>) -> Void) {
-        self.completion = completion
-    }
-
-    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
-    }
-
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
-            completion(.failure(AccessError.missingIdentity))
-            return
-        }
-
-        let email = credential.email ?? ""
-        let formatter = PersonNameComponentsFormatter()
-        let displayName = formatter.string(from: credential.fullName ?? PersonNameComponents())
-
-        if email.isEmpty && displayName.isEmpty {
-            completion(.failure(AccessError.appleProfileUnavailable))
-            return
-        }
-
-        completion(
-            .success(
-                AppleSignInPayload(
-                    email: email.isEmpty ? "Apple Account" : email,
-                    displayName: displayName.isEmpty ? (email.isEmpty ? "Apple Coach" : email) : displayName
-                )
-            )
-        )
-    }
-
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
-        completion(.failure(error))
-    }
-}
-
-private enum AccessError: LocalizedError {
-    case unableToStartSession
-    case invalidCallback
-    case invalidState
-    case missingAuthorizationCode
-    case tokenExchangeFailed
-    case providerError(String)
-    case missingIdentity
-    case unverifiedTransaction
-    case appleProfileUnavailable
-
-    var errorDescription: String? {
-        switch self {
-        case .unableToStartSession:
-            return "The sign-in window could not be opened."
-        case .invalidCallback:
-            return "Google sign-in did not return a valid callback."
-        case .invalidState:
-            return "Google sign-in could not be verified."
-        case .missingAuthorizationCode:
-            return "Google sign-in did not return an authorization code."
-        case .tokenExchangeFailed:
-            return "Google sign-in could not finish the token exchange."
-        case .providerError(let message):
-            return message
-        case .missingIdentity:
-            return "The login provider did not return profile information."
-        case .unverifiedTransaction:
-            return "The App Store transaction could not be verified."
-        case .appleProfileUnavailable:
-            return "Apple only shares name and email on the first sign-in for each app. To test again, remove the app from Sign in with Apple settings on your device."
-        }
-    }
+private struct SoccerCoachBackupPayload: Codable {
+    var version: Int
+    var createdAt: Date
+    var data: AppData
 }
 
 @MainActor
@@ -526,11 +32,19 @@ final class SoccerCoachStore: ObservableObject {
     @Published var photoPickerDrillID: UUID?
     @Published var selectedFieldPositionID: UUID?
     @Published var playerSecondsPlayed: [UUID: Int] = [:]
+    @Published var currentStintSecondsPlayed: [UUID: Int] = [:]
+    @Published var recentlySubbedOutPlayerID: UUID?
     @Published var suggestedSubs: [SuggestedSubstitution] = []
     @Published var newPresetName = ""
+    @Published var backupStatusMessage = ""
+    @Published var backupErrorMessage: String?
 
     private var timerTask: Task<Void, Never>?
+    private var timerAnchorDate: Date?
+    private var timerAnchorRemainingSeconds: Int = 0
+    private var autosaveTask: Task<Void, Never>?
     private let saveURL: URL
+    private var dismissedSuggestionKeys = Set<String>()
 
     init() {
         self.saveURL = Self.makeSaveURL()
@@ -544,23 +58,88 @@ final class SoccerCoachStore: ObservableObject {
             initialData = .default
         }
         self.data = initialData
-        self.remainingSeconds = initialData.gameLengthMinutes * 60
+        self.remainingSeconds = initialData.liveRemainingSeconds ?? (initialData.gameLengthMinutes * 60)
+        self.timerRunning = initialData.liveTimerRunning
+        self.timerAnchorDate = initialData.liveTimerAnchorDate
+        self.timerAnchorRemainingSeconds = initialData.liveTimerAnchorRemainingSeconds > 0
+            ? initialData.liveTimerAnchorRemainingSeconds
+            : self.remainingSeconds
+
+        // Release rule: game is fixed at two 30-minute halves.
+        if data.gameLengthMinutes != 30 {
+            data.gameLengthMinutes = 30
+            if !timerRunning {
+                let halfSeconds = 30 * 60
+                if currentHalf == 1 {
+                    remainingSeconds = halfSeconds
+                } else {
+                    remainingSeconds = min(remainingSeconds, halfSeconds)
+                }
+                timerAnchorRemainingSeconds = remainingSeconds
+            }
+            save()
+        }
+
+        if timerRunning {
+            if timerAnchorDate != nil {
+                syncTimerWithWallClock()
+                if remainingSeconds > 0 {
+                    startTickerTask()
+                } else {
+                    timerRunning = false
+                }
+            } else {
+                timerRunning = false
+            }
+        }
     }
 
     deinit {
         timerTask?.cancel()
+        autosaveTask?.cancel()
     }
 
     var assignedPlayerIDs: Set<UUID> {
         Set(data.fieldPositions.compactMap(\.assignedPlayerID))
     }
 
+    var unavailablePlayerIDs: Set<UUID> {
+        Set(data.unavailablePlayerIDs)
+    }
+
+    var availablePlayers: [Player] {
+        data.players.filter { !unavailablePlayerIDs.contains($0.id) }
+    }
+
     var benchPlayers: [Player] {
-        data.players.filter { !assignedPlayerIDs.contains($0.id) }
+        availablePlayers.filter { !assignedPlayerIDs.contains($0.id) }
     }
 
     var onFieldPlayers: [Player] {
         data.fieldPositions.compactMap { player(for: $0.assignedPlayerID) }
+    }
+
+    var currentHalf: Int {
+        max(1, min(2, data.currentHalf))
+    }
+
+    var preferredColorScheme: ColorScheme? {
+        switch data.appTheme {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
+
+    var savedGameCount: Int {
+        data.savedGames.count
+    }
+
+    var shouldShowCoachOnboarding: Bool {
+        !data.hasSeenCoachOnboarding
     }
 
     func player(for id: UUID?) -> Player? {
@@ -572,17 +151,81 @@ final class SoccerCoachStore: ObservableObject {
         data.fieldPositions.first { $0.id == id }
     }
 
-    func addPlayer() {
-        data.players.append(Player(name: "", jerseyNumber: "", playablePositions: []))
+    func createBackupFile() throws -> URL {
+        backupErrorMessage = nil
+        let backup = SoccerCoachBackupPayload(
+            version: 1,
+            createdAt: .now,
+            data: data
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let backupData = try encoder.encode(backup)
+        let timestamp = ISO8601DateFormatter().string(from: .now)
+            .replacingOccurrences(of: ":", with: "-")
+        let fileName = "soccercoach-backup-\(timestamp).json"
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        try backupData.write(to: destination, options: .atomic)
+        backupStatusMessage = "Backup created."
+        return destination
+    }
+
+    func importBackup(from sourceURL: URL) throws {
+        backupErrorMessage = nil
+        let didAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let importedData = try Data(contentsOf: sourceURL)
+        let decoder = JSONDecoder()
+        let restoredData: AppData
+        if let envelope = try? decoder.decode(SoccerCoachBackupPayload.self, from: importedData) {
+            restoredData = envelope.data
+        } else {
+            restoredData = try decoder.decode(AppData.self, from: importedData)
+        }
+
+        timerTask?.cancel()
+        timerTask = nil
+        timerRunning = false
+        timerAnchorDate = nil
+        timerAnchorRemainingSeconds = restoredData.gameLengthMinutes * 60
+        data = restoredData
+        remainingSeconds = restoredData.gameLengthMinutes * 60
+        cleanupInvalidPlayerReferences()
+        refreshSuggestedSubs()
         save()
+        backupStatusMessage = "Backup restored with \(data.players.count) player(s)."
+    }
+
+    @discardableResult
+    func addPlayer() -> UUID {
+        let player = Player(name: "", jerseyNumber: "", playablePositions: [])
+        data.players.insert(player, at: 0)
+        save()
+        return player.id
     }
 
     func assignPlayer(_ playerID: UUID?, to positionID: UUID) {
         guard let index = data.fieldPositions.firstIndex(where: { $0.id == positionID }) else { return }
+        if let playerID, unavailablePlayerIDs.contains(playerID) { return }
+        let wasOnFieldBefore = playerID.map { assignedPlayerIDs.contains($0) } ?? false
+        let previousPlayerInSpot = data.fieldPositions[index].assignedPlayerID
         if let playerID, let existingIndex = data.fieldPositions.firstIndex(where: { $0.assignedPlayerID == playerID && $0.id != positionID }) {
             data.fieldPositions[existingIndex].assignedPlayerID = data.fieldPositions[index].assignedPlayerID
         }
         data.fieldPositions[index].assignedPlayerID = playerID
+        if let previousPlayerInSpot, previousPlayerInSpot != playerID {
+            recentlySubbedOutPlayerID = previousPlayerInSpot
+            currentStintSecondsPlayed[previousPlayerInSpot] = 0
+        }
+        if let playerID, !wasOnFieldBefore {
+            currentStintSecondsPlayed[playerID] = 0
+        }
+        data.nextPlayerByPositionID[positionID.uuidString] = nil
         refreshSuggestedSubs()
         save()
     }
@@ -590,6 +233,8 @@ final class SoccerCoachStore: ObservableObject {
     func benchPlayer(_ playerID: UUID) {
         guard let index = data.fieldPositions.firstIndex(where: { $0.assignedPlayerID == playerID }) else { return }
         data.fieldPositions[index].assignedPlayerID = nil
+        recentlySubbedOutPlayerID = playerID
+        currentStintSecondsPlayed[playerID] = 0
         refreshSuggestedSubs()
         save()
     }
@@ -602,20 +247,182 @@ final class SoccerCoachStore: ObservableObject {
         }
     }
 
+    func queuedNextPlayerID(for positionID: UUID) -> UUID? {
+        data.nextPlayerByPositionID[positionID.uuidString]
+    }
+
+    func queuedNextPlayer(for positionID: UUID) -> Player? {
+        guard let playerID = queuedNextPlayerID(for: positionID) else { return nil }
+        return player(for: playerID)
+    }
+
+    func setQueuedNextPlayer(_ playerID: UUID?, for positionID: UUID) {
+        if let playerID, unavailablePlayerIDs.contains(playerID) { return }
+        data.nextPlayerByPositionID[positionID.uuidString] = playerID
+        save()
+    }
+
+    func applyQueuedNextPlayer(for positionID: UUID) {
+        guard let playerID = queuedNextPlayerID(for: positionID) else { return }
+        if unavailablePlayerIDs.contains(playerID) { return }
+        assignPlayer(playerID, to: positionID)
+    }
+
+    func applyAllQueuedNextPlayers() {
+        let queue = data.nextPlayerByPositionID
+        guard !queue.isEmpty else { return }
+
+        for position in data.fieldPositions {
+            guard let queuedID = queue[position.id.uuidString] else { continue }
+            if unavailablePlayerIDs.contains(queuedID) { continue }
+            assignPlayer(queuedID, to: position.id)
+        }
+        refreshSuggestedSubs()
+        save()
+    }
+
     func recommendedPlayers(for position: FieldPosition) -> [Player] {
-        let target = normalizePositionName(position.name)
-        return data.players.sorted { lhs, rhs in
-            let lhsMatches = lhs.playablePositions.contains { normalizePositionName($0) == target }
-            let rhsMatches = rhs.playablePositions.contains { normalizePositionName($0) == target }
-            if lhsMatches == rhsMatches {
+        let targetName = position.name
+        return availablePlayers.sorted { lhs, rhs in
+            let lhsRank = bestPositionMatchRank(for: lhs, targetPositionName: targetName)
+            let rhsRank = bestPositionMatchRank(for: rhs, targetPositionName: targetName)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            if lhsRank == Int.max {
                 return lhs.name < rhs.name
             }
-            return lhsMatches && !rhsMatches
+            let lhsTime = playerSecondsPlayed[lhs.id, default: 0]
+            let rhsTime = playerSecondsPlayed[rhs.id, default: 0]
+            if lhsTime != rhsTime {
+                return lhsTime < rhsTime
+            }
+            return lhs.name < rhs.name
         }
+    }
+
+    func isPlayerUnavailable(_ playerID: UUID) -> Bool {
+        unavailablePlayerIDs.contains(playerID)
+    }
+
+    func setPlayerUnavailable(_ playerID: UUID, unavailable: Bool) {
+        var set = unavailablePlayerIDs
+        if unavailable {
+            set.insert(playerID)
+        } else {
+            set.remove(playerID)
+        }
+        data.unavailablePlayerIDs = Array(set)
+
+        if unavailable {
+            for index in data.fieldPositions.indices where data.fieldPositions[index].assignedPlayerID == playerID {
+                data.fieldPositions[index].assignedPlayerID = nil
+            }
+            data.nextPlayerByPositionID = data.nextPlayerByPositionID.filter { _, queuedID in
+                queuedID != playerID
+            }
+            if recentlySubbedOutPlayerID == playerID {
+                recentlySubbedOutPlayerID = nil
+            }
+        }
+
+        refreshSuggestedSubs()
+        save()
     }
 
     func formattedPlayTime(for playerID: UUID) -> String {
         let totalSeconds = playerSecondsPlayed[playerID, default: 0]
+        return formatDuration(totalSeconds)
+    }
+
+    func formattedSeasonPlayTime(for playerID: UUID) -> String {
+        formatDuration(seasonSeconds(for: playerID))
+    }
+
+    func seasonSeconds(for playerID: UUID) -> Int {
+        let key = playerID.uuidString
+        return data.savedGames.reduce(0) { partial, game in
+            partial + (game.playerSeconds[key] ?? 0)
+        }
+    }
+
+    @discardableResult
+    func saveCurrentGameStats() -> SavedGameStats {
+        let title = "Game \(data.savedGames.count + 1)"
+        let secondsByPlayerID = Dictionary(
+            uniqueKeysWithValues: playerSecondsPlayed.map { ($0.key.uuidString, $0.value) }
+        )
+        let namesByPlayerID = Dictionary(
+            uniqueKeysWithValues: data.players.map { ($0.id.uuidString, $0.name) }
+        )
+        let jerseyNumbersByPlayerID = Dictionary(
+            uniqueKeysWithValues: data.players.map { ($0.id.uuidString, $0.jerseyNumber) }
+        )
+        let saved = SavedGameStats(
+            title: title,
+            opponentName: data.gameOpponentName,
+            gameDate: data.gameDate,
+            gameLengthMinutes: data.gameLengthMinutes,
+            playerSeconds: secondsByPlayerID,
+            playerNames: namesByPlayerID,
+            playerJerseyNumbers: jerseyNumbersByPlayerID
+        )
+        data.savedGames.insert(saved, at: 0)
+        save()
+        return saved
+    }
+
+    func deleteSavedGames(atOffsets offsets: IndexSet) {
+        data.savedGames.remove(atOffsets: offsets)
+        save()
+    }
+
+    func setAppTheme(_ theme: AppTheme) {
+        data.appTheme = theme
+        save()
+    }
+
+    func markCoachOnboardingSeen() {
+        data.hasSeenCoachOnboarding = true
+        save()
+    }
+
+    func showCoachOnboardingAgain() {
+        data.hasSeenCoachOnboarding = false
+        save()
+    }
+
+    func loadSampleCoachingData() {
+        let samplePlayers = AppData.default.players.map { player in
+            Player(
+                id: UUID(),
+                name: player.name,
+                jerseyNumber: player.jerseyNumber,
+                playablePositions: player.playablePositions
+            )
+        }
+
+        data.players = samplePlayers
+        data.gameFormation = .twoThreeOne
+        data.fieldPositions = AppData.default.fieldPositions.map { position in
+            FieldPosition(
+                id: UUID(),
+                name: position.name,
+                assignedPlayerID: nil
+            )
+        }
+        data.practicePlans = AppData.default.practicePlans
+        data.subWindows = AppData.default.subWindows
+        data.lineupPresets = []
+        data.nextPlayerByPositionID = [:]
+        data.unavailablePlayerIDs = []
+        data.gameOpponentName = ""
+        data.gameDate = .now
+        resetTimer()
+        save()
+    }
+
+    func formatDuration(_ totalSeconds: Int) -> String {
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         return String(format: "%d:%02d", minutes, seconds)
@@ -623,13 +430,33 @@ final class SoccerCoachStore: ObservableObject {
 
     func resetFairPlay() {
         playerSecondsPlayed = [:]
+        currentStintSecondsPlayed = [:]
+        recentlySubbedOutPlayerID = nil
         refreshSuggestedSubs()
     }
 
     func applySuggestedSub(_ suggestion: SuggestedSubstitution) {
         assignPlayer(suggestion.playerInID, to: suggestion.positionID)
+        dismissedSuggestionKeys.remove(suggestionKey(for: suggestion))
         refreshSuggestedSubs()
         save()
+    }
+
+    func applyAllSuggestedSubs() {
+        let queuedSuggestions = suggestedSubs
+        guard !queuedSuggestions.isEmpty else { return }
+
+        for suggestion in queuedSuggestions {
+            assignPlayer(suggestion.playerInID, to: suggestion.positionID)
+            dismissedSuggestionKeys.remove(suggestionKey(for: suggestion))
+        }
+        refreshSuggestedSubs()
+        save()
+    }
+
+    func dismissSuggestedSub(_ suggestion: SuggestedSubstitution) {
+        dismissedSuggestionKeys.insert(suggestionKey(for: suggestion))
+        suggestedSubs.removeAll { $0.id == suggestion.id }
     }
 
     func addPracticeTemplate(named name: String) {
@@ -692,35 +519,43 @@ final class SoccerCoachStore: ObservableObject {
                 let currentPlayer = player(for: currentPlayerID)
             else { continue }
 
-            let target = normalizePositionName(position.name)
-            let candidates = benchPlayers.filter { player in
-                !usedBenchPlayers.contains(player.id) &&
-                player.playablePositions.contains { normalizePositionName($0) == target }
+            if isGoaliePositionName(position.name) {
+                continue
             }
-            .sorted {
-                let lhsTime = playerSecondsPlayed[$0.id, default: 0]
-                let rhsTime = playerSecondsPlayed[$1.id, default: 0]
-                if lhsTime == rhsTime {
-                    return $0.name < $1.name
+            let rankedCandidates = benchPlayers
+                .filter { !usedBenchPlayers.contains($0.id) }
+                .map { player in
+                    (player, bestPositionMatchRank(for: player, targetPositionName: position.name))
                 }
-                return lhsTime < rhsTime
-            }
+                .filter { $0.1 < Int.max }
+                .sorted { lhs, rhs in
+                    if lhs.1 != rhs.1 {
+                        return lhs.1 < rhs.1
+                    }
+                    let lhsTime = playerSecondsPlayed[lhs.0.id, default: 0]
+                    let rhsTime = playerSecondsPlayed[rhs.0.id, default: 0]
+                    if lhsTime != rhsTime {
+                        return lhsTime < rhsTime
+                    }
+                    return lhs.0.name < rhs.0.name
+                }
 
-            guard let playerIn = candidates.first else { continue }
+            guard let playerIn = rankedCandidates.first?.0 else { continue }
 
-            let currentPlayerTime = playerSecondsPlayed[currentPlayerID, default: 0]
-            let benchPlayerTime = playerSecondsPlayed[playerIn.id, default: 0]
-            guard currentPlayerTime - benchPlayerTime >= 120 else { continue }
+            let currentStint = currentStintSecondsPlayed[currentPlayerID, default: 0]
+            guard currentStint >= 300 else { continue }
 
-            suggestions.append(
-                SuggestedSubstitution(
-                    positionID: position.id,
-                    positionName: position.name,
-                    playerOutID: currentPlayer.id,
-                    playerInID: playerIn.id,
-                    reason: "\(playerIn.name) fits \(position.name) and has played less."
-                )
+            let suggestion = SuggestedSubstitution(
+                positionID: position.id,
+                positionName: position.name,
+                playerOutID: currentPlayer.id,
+                playerInID: playerIn.id,
+                reason: "\(currentPlayer.name) has been in for \(formatDuration(currentStint))."
             )
+            if dismissedSuggestionKeys.contains(suggestionKey(for: suggestion)) {
+                continue
+            }
+            suggestions.append(suggestion)
             usedBenchPlayers.insert(playerIn.id)
         }
 
@@ -735,13 +570,61 @@ final class SoccerCoachStore: ObservableObject {
             .replacingOccurrences(of: " ", with: "")
     }
 
+    private func positionFamily(for positionName: String) -> PositionFamily {
+        let normalized = normalizePositionName(positionName)
+        if normalized.contains("goalie") || normalized == "gk" || normalized.contains("keeper") {
+            return .goalie
+        }
+        if normalized.contains("defense") || normalized.contains("defender") || normalized.contains("back") {
+            return .defense
+        }
+        if normalized.contains("midfield") || normalized.contains("mid") {
+            return .midfield
+        }
+        if normalized.contains("forward") || normalized.contains("striker") || normalized.contains("offense") || normalized.contains("attack") || normalized.contains("wing") {
+            return .forward
+        }
+        return .other
+    }
+
+    func isGoaliePositionName(_ positionName: String) -> Bool {
+        positionFamily(for: positionName) == .goalie
+    }
+
+    func positionMatchRank(playerPositionName: String, targetPositionName: String) -> Int {
+        let normalizedPlayer = normalizePositionName(playerPositionName)
+        let normalizedTarget = normalizePositionName(targetPositionName)
+        if normalizedPlayer == normalizedTarget {
+            return 0
+        }
+        let playerFamily = positionFamily(for: playerPositionName)
+        let targetFamily = positionFamily(for: targetPositionName)
+        if playerFamily != .other, playerFamily == targetFamily {
+            return 1
+        }
+        if normalizedPlayer.contains(normalizedTarget) || normalizedTarget.contains(normalizedPlayer) {
+            return 2
+        }
+        return Int.max
+    }
+
+    func bestPositionMatchRank(for player: Player, targetPositionName: String) -> Int {
+        player.playablePositions
+            .map { positionMatchRank(playerPositionName: $0, targetPositionName: targetPositionName) }
+            .min() ?? Int.max
+    }
+
     func removePlayers(at offsets: IndexSet) {
         let removedIDs = Set(offsets.map { data.players[$0].id })
         data.players.remove(atOffsets: offsets)
+        data.unavailablePlayerIDs.removeAll { removedIDs.contains($0) }
         for index in data.fieldPositions.indices {
             if let assignedID = data.fieldPositions[index].assignedPlayerID, removedIDs.contains(assignedID) {
                 data.fieldPositions[index].assignedPlayerID = nil
             }
+        }
+        data.nextPlayerByPositionID = data.nextPlayerByPositionID.filter { _, queuedPlayerID in
+            !removedIDs.contains(queuedPlayerID)
         }
         removedIDs.forEach { playerSecondsPlayed.removeValue(forKey: $0) }
         refreshSuggestedSubs()
@@ -754,23 +637,72 @@ final class SoccerCoachStore: ObservableObject {
         save()
     }
 
-    func resetToSevenVSevenShape() {
-        var rebuilt: [FieldPosition] = []
+    func setGameFormation(_ formation: GameFormation) {
+        guard data.gameFormation != formation else { return }
+        data.gameFormation = formation
+        rebuildFieldPositions(for: formation)
+        refreshSuggestedSubs()
+        save()
+    }
 
-        for name in defaultSevenVSevenPositions {
-            let existing = data.fieldPositions.first { normalizePositionName($0.name) == normalizePositionName(name) }
+    func resetToSevenVSevenShape() {
+        rebuildFieldPositions(for: data.gameFormation)
+        refreshSuggestedSubs()
+        save()
+    }
+
+    private func rebuildFieldPositions(for formation: GameFormation) {
+        var oldPositions = data.fieldPositions
+        var usedOldIDs = Set<UUID>()
+        var rebuilt: [FieldPosition] = []
+        var newQueueByPositionID: [String: UUID] = [:]
+
+        for name in formation.positionNames {
+            let normalizedTarget = normalizePositionName(name)
+            let exactMatch = oldPositions.first {
+                !usedOldIDs.contains($0.id) && normalizePositionName($0.name) == normalizedTarget
+            }
+            let roleMatch = oldPositions.first {
+                !usedOldIDs.contains($0.id) && positionMatchRank(playerPositionName: $0.name, targetPositionName: name) <= 1
+            }
+            let fallbackMatch = oldPositions.first { !usedOldIDs.contains($0.id) }
+            let source = exactMatch ?? roleMatch ?? fallbackMatch
+
+            let id = source?.id ?? UUID()
+            let assignedPlayerID = source?.assignedPlayerID
+            let queuedPlayerID = source.flatMap { data.nextPlayerByPositionID[$0.id.uuidString] }
+
             rebuilt.append(
                 FieldPosition(
-                    id: existing?.id ?? UUID(),
+                    id: id,
                     name: name,
-                    assignedPlayerID: existing?.assignedPlayerID
+                    assignedPlayerID: assignedPlayerID
                 )
             )
+            if let queuedPlayerID {
+                newQueueByPositionID[id.uuidString] = queuedPlayerID
+            }
+            if let source {
+                usedOldIDs.insert(source.id)
+            }
+        }
+
+        oldPositions.removeAll { usedOldIDs.contains($0.id) }
+
+        for leftover in oldPositions where leftover.assignedPlayerID != nil {
+            let leftoverFamily = positionFamily(for: leftover.name)
+            guard
+                let targetIndex = rebuilt.firstIndex(where: { position in
+                    position.assignedPlayerID == nil && positionFamily(for: position.name) == leftoverFamily
+                })
+            else { continue }
+            rebuilt[targetIndex].assignedPlayerID = leftover.assignedPlayerID
         }
 
         data.fieldPositions = rebuilt
-        refreshSuggestedSubs()
-        save()
+        data.nextPlayerByPositionID = newQueueByPositionID.filter { _, playerID in
+            !unavailablePlayerIDs.contains(playerID)
+        }
     }
 
     func saveCurrentLineupPreset() {
@@ -811,7 +743,11 @@ final class SoccerCoachStore: ObservableObject {
     }
 
     func removePositions(at offsets: IndexSet) {
+        let removedPositionIDs = Set(offsets.map { data.fieldPositions[$0].id.uuidString })
         data.fieldPositions.remove(atOffsets: offsets)
+        data.nextPlayerByPositionID = data.nextPlayerByPositionID.filter { key, _ in
+            !removedPositionIDs.contains(key)
+        }
         refreshSuggestedSubs()
         save()
     }
@@ -869,41 +805,171 @@ final class SoccerCoachStore: ObservableObject {
 
     func startPauseTimer() {
         if timerRunning {
+            syncTimerWithWallClock()
             timerRunning = false
+            timerAnchorDate = nil
+            timerAnchorRemainingSeconds = remainingSeconds
             timerTask?.cancel()
             timerTask = nil
+            save()
             return
         }
 
+        if remainingSeconds <= 0 {
+            if currentHalf == 1 {
+                data.currentHalf = 2
+                remainingSeconds = data.gameLengthMinutes * 60
+                timerAnchorRemainingSeconds = remainingSeconds
+            } else {
+                return
+            }
+        }
+
         timerRunning = true
+        timerAnchorDate = .now
+        timerAnchorRemainingSeconds = remainingSeconds
+        startTickerTask()
+        save()
+    }
+
+    func startSecondHalf() {
+        guard currentHalf == 1 else { return }
+
+        timerRunning = false
+        timerTask?.cancel()
+        timerTask = nil
+        timerAnchorDate = nil
+
+        data.currentHalf = 2
+        data.gameLengthMinutes = 30
+        remainingSeconds = 30 * 60
+        timerAnchorRemainingSeconds = remainingSeconds
+        save()
+
+        startPauseTimer()
+    }
+
+    private func startTickerTask() {
+        timerTask?.cancel()
         timerTask = Task {
             while !Task.isCancelled && remainingSeconds > 0 {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    if timerRunning && remainingSeconds > 0 {
-                        remainingSeconds -= 1
-                        for playerID in assignedPlayerIDs {
-                            playerSecondsPlayed[playerID, default: 0] += 1
-                        }
-                        if remainingSeconds % 10 == 0 {
-                            refreshSuggestedSubs()
-                        }
-                    }
-                    if remainingSeconds == 0 {
-                        timerRunning = false
-                    }
+                    syncTimerWithWallClock()
                 }
             }
         }
     }
 
+    private func syncTimerWithWallClock() {
+        guard timerRunning, let anchorDate = timerAnchorDate else { return }
+
+        let elapsed = max(Int(Date().timeIntervalSince(anchorDate)), 0)
+        let updatedRemaining = max(timerAnchorRemainingSeconds - elapsed, 0)
+        let delta = max(remainingSeconds - updatedRemaining, 0)
+
+        if delta > 0 {
+            for playerID in assignedPlayerIDs {
+                playerSecondsPlayed[playerID, default: 0] += delta
+                currentStintSecondsPlayed[playerID, default: 0] += delta
+            }
+            if delta >= 10 || updatedRemaining % 10 == 0 {
+                refreshSuggestedSubs()
+            }
+            if updatedRemaining % 5 == 0 {
+                // Persist often so per-player game minutes survive interruptions.
+                save()
+            }
+        }
+
+        remainingSeconds = updatedRemaining
+
+        if remainingSeconds == 0 {
+            timerRunning = false
+            timerAnchorDate = nil
+            timerAnchorRemainingSeconds = 0
+            timerTask?.cancel()
+            timerTask = nil
+            save()
+        }
+    }
+
     func resetTimer() {
         timerRunning = false
+        timerAnchorDate = nil
+        timerAnchorRemainingSeconds = 0
         timerTask?.cancel()
         timerTask = nil
+        data.currentHalf = 1
         remainingSeconds = data.gameLengthMinutes * 60
         resetFairPlay()
+        save()
+    }
+
+    func setGameLengthMinutes(_ minutes: Int) {
+        _ = minutes
+        data.gameLengthMinutes = 30
+        if !timerRunning && currentHalf == 1 {
+            remainingSeconds = 30 * 60
+            timerAnchorRemainingSeconds = remainingSeconds
+        }
+        save()
+    }
+
+    func startGameSession() {
+        data.gameDate = .now
+        save()
+        let hasStartedClock = timerRunning || remainingSeconds < data.gameLengthMinutes * 60
+        if !hasStartedClock {
+            data.currentHalf = 1
+            resetTimer()
+        }
+        if !timerRunning {
+            startPauseTimer()
+        }
+    }
+
+    func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .active {
+            if timerRunning {
+                syncTimerWithWallClock()
+                startTickerTask()
+            }
+            return
+        }
+
+        if timerRunning {
+            syncTimerWithWallClock()
+            timerTask?.cancel()
+            timerTask = nil
+        }
+
+        if phase == .inactive || phase == .background {
+            flushAutosave()
+        }
+    }
+
+    private func cleanupInvalidPlayerReferences() {
+        let validPlayerIDs = Set(data.players.map(\.id))
+        data.unavailablePlayerIDs = data.unavailablePlayerIDs.filter { validPlayerIDs.contains($0) }
+        for index in data.fieldPositions.indices {
+            if let assignedID = data.fieldPositions[index].assignedPlayerID, !validPlayerIDs.contains(assignedID) {
+                data.fieldPositions[index].assignedPlayerID = nil
+            } else if let assignedID = data.fieldPositions[index].assignedPlayerID, unavailablePlayerIDs.contains(assignedID) {
+                data.fieldPositions[index].assignedPlayerID = nil
+            }
+        }
+        data.nextPlayerByPositionID = data.nextPlayerByPositionID.filter { _, playerID in
+            validPlayerIDs.contains(playerID) && !unavailablePlayerIDs.contains(playerID)
+        }
+        if let recentlySubbedOutPlayerID, !validPlayerIDs.contains(recentlySubbedOutPlayerID) {
+            self.recentlySubbedOutPlayerID = nil
+        } else if let recentlySubbedOutPlayerID, unavailablePlayerIDs.contains(recentlySubbedOutPlayerID) {
+            self.recentlySubbedOutPlayerID = nil
+        }
+        playerSecondsPlayed = playerSecondsPlayed.filter { validPlayerIDs.contains($0.key) }
+        currentStintSecondsPlayed = currentStintSecondsPlayed.filter { validPlayerIDs.contains($0.key) }
     }
 
     func formattedTime() -> String {
@@ -913,7 +979,13 @@ final class SoccerCoachStore: ObservableObject {
     }
 
     func save() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
         do {
+            data.liveRemainingSeconds = remainingSeconds
+            data.liveTimerRunning = timerRunning
+            data.liveTimerAnchorDate = timerAnchorDate
+            data.liveTimerAnchorRemainingSeconds = timerAnchorRemainingSeconds
             let folder = saveURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let encoded = try JSONEncoder().encode(data)
@@ -923,6 +995,21 @@ final class SoccerCoachStore: ObservableObject {
         }
     }
 
+    func queueAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.save()
+            }
+        }
+    }
+
+    func flushAutosave() {
+        save()
+    }
+
     private static func makeSaveURL() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -930,4 +1017,9 @@ final class SoccerCoachStore: ObservableObject {
             .appendingPathComponent("SoccerCoach", isDirectory: true)
             .appendingPathComponent("soccercoach-data.json")
     }
+
+    private func suggestionKey(for suggestion: SuggestedSubstitution) -> String {
+        "\(suggestion.positionID.uuidString)|\(suggestion.playerOutID.uuidString)|\(suggestion.playerInID.uuidString)"
+    }
+
 }

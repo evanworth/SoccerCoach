@@ -124,10 +124,134 @@ struct LineupPreset: Identifiable, Codable, Hashable {
     var assignments: [String: UUID?]
 }
 
-struct CoachAccount: Codable, Equatable {
-    var provider: String
-    var email: String
-    var displayName: String
+enum GameFormation: String, Codable, CaseIterable, Hashable {
+    case threeThree = "3-3"
+    case twoThreeOne = "2-3-1"
+    case twoTwoTwo = "2-2-2"
+    case threeOneTwo = "3-1-2"
+
+    var title: String { rawValue }
+
+    var positionNames: [String] {
+        switch self {
+        case .threeThree:
+            return [
+                "Goalie",
+                "Left Defense",
+                "Center Defense",
+                "Right Defense",
+                "Left Forward",
+                "Center Forward",
+                "Right Forward",
+            ]
+        case .twoThreeOne:
+            return [
+                "Goalie",
+                "Left Defense",
+                "Right Defense",
+                "Left Midfield",
+                "Center Midfield",
+                "Right Midfield",
+                "Forward",
+            ]
+        case .twoTwoTwo:
+            return [
+                "Goalie",
+                "Left Defense",
+                "Right Defense",
+                "Left Midfield",
+                "Right Midfield",
+                "Left Forward",
+                "Right Forward",
+            ]
+        case .threeOneTwo:
+            return [
+                "Goalie",
+                "Left Defense",
+                "Center Defense",
+                "Right Defense",
+                "Center Midfield",
+                "Left Forward",
+                "Right Forward",
+            ]
+        }
+    }
+}
+
+enum AppTheme: String, Codable, CaseIterable, Hashable {
+    case system
+    case light
+    case dark
+
+    var title: String {
+        switch self {
+        case .system:
+            return "System"
+        case .light:
+            return "Light"
+        case .dark:
+            return "Dark"
+        }
+    }
+}
+
+struct SavedGameStats: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var savedAt: Date = .now
+    var title: String
+    var opponentName: String
+    var gameDate: Date
+    var gameLengthMinutes: Int
+    var playerSeconds: [String: Int]
+    var playerNames: [String: String]
+    var playerJerseyNumbers: [String: String]
+
+    init(
+        id: UUID = UUID(),
+        savedAt: Date = .now,
+        title: String,
+        opponentName: String = "",
+        gameDate: Date = .now,
+        gameLengthMinutes: Int = 30,
+        playerSeconds: [String: Int],
+        playerNames: [String: String] = [:],
+        playerJerseyNumbers: [String: String] = [:]
+    ) {
+        self.id = id
+        self.savedAt = savedAt
+        self.title = title
+        self.opponentName = opponentName
+        self.gameDate = gameDate
+        self.gameLengthMinutes = gameLengthMinutes
+        self.playerSeconds = playerSeconds
+        self.playerNames = playerNames
+        self.playerJerseyNumbers = playerJerseyNumbers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        savedAt = try container.decodeIfPresent(Date.self, forKey: .savedAt) ?? .now
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        opponentName = try container.decodeIfPresent(String.self, forKey: .opponentName) ?? ""
+        gameDate = try container.decodeIfPresent(Date.self, forKey: .gameDate) ?? .now
+        gameLengthMinutes = try container.decodeIfPresent(Int.self, forKey: .gameLengthMinutes) ?? 30
+        playerSeconds = try container.decodeIfPresent([String: Int].self, forKey: .playerSeconds) ?? [:]
+        playerNames = try container.decodeIfPresent([String: String].self, forKey: .playerNames) ?? [:]
+        playerJerseyNumbers = try container.decodeIfPresent([String: String].self, forKey: .playerJerseyNumbers) ?? [:]
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case savedAt
+        case title
+        case opponentName
+        case gameDate
+        case gameLengthMinutes
+        case playerSeconds
+        case playerNames
+        case playerJerseyNumbers
+    }
 }
 
 struct AppData: Codable, Equatable {
@@ -136,10 +260,122 @@ struct AppData: Codable, Equatable {
     var lineupPresets: [LineupPreset]
     var subWindows: [SubWindow]
     var practicePlans: [PracticePlan]
+    var unavailablePlayerIDs: [UUID]
     var gameLengthMinutes: Int
     var substitutionInterval: Int
+    var liveRemainingSeconds: Int?
+    var liveTimerRunning: Bool
+    var liveTimerAnchorDate: Date?
+    var liveTimerAnchorRemainingSeconds: Int
+    var currentHalf: Int
+    var gameOpponentName: String
+    var gameDate: Date
     var firstHalfNotes: String
     var secondHalfNotes: String
+    var nextPlayerByPositionID: [String: UUID]
+    var savedGames: [SavedGameStats]
+    var appTheme: AppTheme
+    var gameFormation: GameFormation
+    var hasSeenCoachOnboarding: Bool
+
+    init(
+        players: [Player],
+        fieldPositions: [FieldPosition],
+        lineupPresets: [LineupPreset],
+        subWindows: [SubWindow],
+        practicePlans: [PracticePlan],
+        unavailablePlayerIDs: [UUID] = [],
+        gameLengthMinutes: Int,
+        substitutionInterval: Int,
+        liveRemainingSeconds: Int? = nil,
+        liveTimerRunning: Bool = false,
+        liveTimerAnchorDate: Date? = nil,
+        liveTimerAnchorRemainingSeconds: Int = 0,
+        currentHalf: Int = 1,
+        gameOpponentName: String = "",
+        gameDate: Date = .now,
+        firstHalfNotes: String,
+        secondHalfNotes: String,
+        nextPlayerByPositionID: [String: UUID] = [:],
+        savedGames: [SavedGameStats] = [],
+        appTheme: AppTheme = .system,
+        gameFormation: GameFormation = .twoThreeOne,
+        hasSeenCoachOnboarding: Bool = false
+    ) {
+        self.players = players
+        self.fieldPositions = fieldPositions
+        self.lineupPresets = lineupPresets
+        self.subWindows = subWindows
+        self.practicePlans = practicePlans
+        self.unavailablePlayerIDs = unavailablePlayerIDs
+        self.gameLengthMinutes = gameLengthMinutes
+        self.substitutionInterval = substitutionInterval
+        self.liveRemainingSeconds = liveRemainingSeconds
+        self.liveTimerRunning = liveTimerRunning
+        self.liveTimerAnchorDate = liveTimerAnchorDate
+        self.liveTimerAnchorRemainingSeconds = liveTimerAnchorRemainingSeconds
+        self.currentHalf = currentHalf
+        self.gameOpponentName = gameOpponentName
+        self.gameDate = gameDate
+        self.firstHalfNotes = firstHalfNotes
+        self.secondHalfNotes = secondHalfNotes
+        self.nextPlayerByPositionID = nextPlayerByPositionID
+        self.savedGames = savedGames
+        self.appTheme = appTheme
+        self.gameFormation = gameFormation
+        self.hasSeenCoachOnboarding = hasSeenCoachOnboarding
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        players = try container.decodeIfPresent([Player].self, forKey: .players) ?? []
+        fieldPositions = try container.decodeIfPresent([FieldPosition].self, forKey: .fieldPositions) ?? []
+        lineupPresets = try container.decodeIfPresent([LineupPreset].self, forKey: .lineupPresets) ?? []
+        subWindows = try container.decodeIfPresent([SubWindow].self, forKey: .subWindows) ?? []
+        practicePlans = try container.decodeIfPresent([PracticePlan].self, forKey: .practicePlans) ?? []
+        unavailablePlayerIDs = try container.decodeIfPresent([UUID].self, forKey: .unavailablePlayerIDs) ?? []
+        gameLengthMinutes = try container.decodeIfPresent(Int.self, forKey: .gameLengthMinutes) ?? 30
+        substitutionInterval = try container.decodeIfPresent(Int.self, forKey: .substitutionInterval) ?? 5
+        liveRemainingSeconds = try container.decodeIfPresent(Int.self, forKey: .liveRemainingSeconds)
+        liveTimerRunning = try container.decodeIfPresent(Bool.self, forKey: .liveTimerRunning) ?? false
+        liveTimerAnchorDate = try container.decodeIfPresent(Date.self, forKey: .liveTimerAnchorDate)
+        liveTimerAnchorRemainingSeconds = try container.decodeIfPresent(Int.self, forKey: .liveTimerAnchorRemainingSeconds) ?? 0
+        currentHalf = try container.decodeIfPresent(Int.self, forKey: .currentHalf) ?? 1
+        gameOpponentName = try container.decodeIfPresent(String.self, forKey: .gameOpponentName) ?? ""
+        gameDate = try container.decodeIfPresent(Date.self, forKey: .gameDate) ?? .now
+        firstHalfNotes = try container.decodeIfPresent(String.self, forKey: .firstHalfNotes) ?? ""
+        secondHalfNotes = try container.decodeIfPresent(String.self, forKey: .secondHalfNotes) ?? ""
+        nextPlayerByPositionID = try container.decodeIfPresent([String: UUID].self, forKey: .nextPlayerByPositionID) ?? [:]
+        savedGames = try container.decodeIfPresent([SavedGameStats].self, forKey: .savedGames) ?? []
+        appTheme = try container.decodeIfPresent(AppTheme.self, forKey: .appTheme) ?? .system
+        gameFormation = try container.decodeIfPresent(GameFormation.self, forKey: .gameFormation) ?? .twoThreeOne
+        hasSeenCoachOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasSeenCoachOnboarding) ?? false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case players
+        case fieldPositions
+        case lineupPresets
+        case subWindows
+        case practicePlans
+        case unavailablePlayerIDs
+        case gameLengthMinutes
+        case substitutionInterval
+        case liveRemainingSeconds
+        case liveTimerRunning
+        case liveTimerAnchorDate
+        case liveTimerAnchorRemainingSeconds
+        case currentHalf
+        case gameOpponentName
+        case gameDate
+        case firstHalfNotes
+        case secondHalfNotes
+        case nextPlayerByPositionID
+        case savedGames
+        case appTheme
+        case gameFormation
+        case hasSeenCoachOnboarding
+    }
 
     static let `default` = AppData(
         players: [
@@ -148,15 +384,7 @@ struct AppData: Codable, Equatable {
             Player(name: "Ella", jerseyNumber: "2", playablePositions: ["Left Defense", "Right Defense", "Center Midfield"]),
             Player(name: "Sofia", jerseyNumber: "1", playablePositions: ["Goalie"])
         ],
-        fieldPositions: [
-            FieldPosition(name: "Goalie"),
-            FieldPosition(name: "Left Defense"),
-            FieldPosition(name: "Right Defense"),
-            FieldPosition(name: "Left Midfield"),
-            FieldPosition(name: "Center Midfield"),
-            FieldPosition(name: "Right Midfield"),
-            FieldPosition(name: "Forward")
-        ],
+        fieldPositions: GameFormation.twoThreeOne.positionNames.map { FieldPosition(name: $0) },
         lineupPresets: [],
         subWindows: [
             SubWindow(minuteMark: 5, focus: "Swap two midfielders", completed: false),
@@ -179,9 +407,22 @@ struct AppData: Codable, Equatable {
                 notes: "Keep lines short and rotate partners often."
             )
         ],
-        gameLengthMinutes: 60,
+        unavailablePlayerIDs: [],
+        gameLengthMinutes: 30,
         substitutionInterval: 5,
+        liveRemainingSeconds: nil,
+        liveTimerRunning: false,
+        liveTimerAnchorDate: nil,
+        liveTimerAnchorRemainingSeconds: 0,
+        currentHalf: 1,
+        gameOpponentName: "",
+        gameDate: .now,
         firstHalfNotes: "",
-        secondHalfNotes: ""
+        secondHalfNotes: "",
+        nextPlayerByPositionID: [:],
+        savedGames: [],
+        appTheme: .system,
+        gameFormation: .twoThreeOne,
+        hasSeenCoachOnboarding: false
     )
 }

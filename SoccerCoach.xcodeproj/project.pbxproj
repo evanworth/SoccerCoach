@@ -1,5 +1,8 @@
 // !$*UTF8*$!
 {
+	archiveVersion = 1;
+	classes = {
+	};
 	objectVersion = 77;
 	objects = {
 
@@ -8,6 +11,9 @@
 		A00000000000000000000012 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000002 /* Models.swift */; };
 		A00000000000000000000013 /* SoccerCoachStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000003 /* SoccerCoachStore.swift */; };
 		A00000000000000000000014 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000004 /* ContentView.swift */; };
+		A00000000000000000000015 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000092 /* GoogleSignIn */; };
+		A00000000000000000000016 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000094 /* Supabase */; };
+		A00000000000000000000017 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -16,6 +22,7 @@
 		A00000000000000000000003 /* SoccerCoachStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoccerCoachStore.swift; sourceTree = "<group>"; };
 		A00000000000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A00000000000000000000005 /* SoccerCoach.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SoccerCoach.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -23,6 +30,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A00000000000000000000015 /* GoogleSignIn in Frameworks */,
+				A00000000000000000000016 /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -44,6 +53,7 @@
 				A00000000000000000000002 /* Models.swift */,
 				A00000000000000000000003 /* SoccerCoachStore.swift */,
 				A00000000000000000000004 /* ContentView.swift */,
+				A00000000000000000000006 /* Assets.xcassets */,
 			);
 			path = SoccerCoach;
 			sourceTree = "<group>";
@@ -72,6 +82,10 @@
 			dependencies = (
 			);
 			name = SoccerCoach;
+			packageProductDependencies = (
+				A00000000000000000000092 /* GoogleSignIn */,
+				A00000000000000000000094 /* Supabase */,
+			);
 			productName = SoccerCoach;
 			productReference = A00000000000000000000005 /* SoccerCoach.app */;
 			productType = "com.apple.product-type.application";
@@ -100,6 +114,10 @@
 			);
 			mainGroup = A00000000000000000000031;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A00000000000000000000091 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+				A00000000000000000000093 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A00000000000000000000033 /* Products */;
 			projectDirPath = "";
@@ -115,6 +133,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A00000000000000000000017 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -141,9 +160,10 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = SoccerCoach/SoccerCoach.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = XA3B6DNQS6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = SoccerCoach/Info.plist;
@@ -168,9 +188,10 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = SoccerCoach/SoccerCoach.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = XA3B6DNQS6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = SoccerCoach/Info.plist;
@@ -211,6 +232,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A00000000000000000000091 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.0.0;
+			};
+		};
+		A00000000000000000000093 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A00000000000000000000092 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000091 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		A00000000000000000000094 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000093 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A00000000000000000000071 /* Project object */;
 }
