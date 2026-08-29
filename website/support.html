@@ -30,8 +30,7 @@
 
       <div class="policy-card">
         <p>
-          Use the form below and your device will open a prefilled email to
-          <a class="text-link" href="mailto:evanworth@gmail.com">evanworth@gmail.com</a>.
+          Use the form below and your device will open a prefilled email addressed to the developer.
         </p>
 
         <form id="support-form" class="support-form">
@@ -50,7 +49,6 @@
             <select name="topic">
               <option>General question</option>
               <option>Bug report</option>
-              <option>Billing issue</option>
               <option>Feature request</option>
             </select>
           </label>
@@ -64,8 +62,7 @@
         </form>
 
         <p class="small-note">
-          If your browser does not open an email app automatically, send a message directly to
-          <a class="text-link" href="mailto:evanworth@gmail.com">evanworth@gmail.com</a>.
+          If your browser does not open an email app automatically, try again on a device with Mail set up.
         </p>
       </div>
     </div>
@@ -85,6 +82,10 @@
   <script>
     const form = document.getElementById("support-form");
 
+    // Split so the address isn't a plain scrapeable string in the page source.
+    const supportUser = "evanworth";
+    const supportHost = "gmail.com";
+
     form.addEventListener("submit", (event) => {
       event.preventDefault();
 
@@ -99,7 +100,7 @@
         `Name: ${name}\nEmail: ${email}\nTopic: ${topic}\n\nMessage:\n${message}`
       );
 
-      window.location.href = `mailto:evanworth@gmail.com?subject=${subject}&body=${body}`;
+      window.location.href = `mailto:${supportUser}@${supportHost}?subject=${subject}&body=${body}`;
     });
   </script>
 </body>

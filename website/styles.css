@@ -85,7 +85,6 @@ a {
 }
 
 .hero-grid,
-.pricing-grid,
 .split-grid {
   display: grid;
   gap: 2rem;
@@ -96,7 +95,6 @@ a {
   grid-template-columns: 1.15fr 0.85fr;
 }
 
-.pricing-grid,
 .split-grid {
   grid-template-columns: 1fr 1fr;
 }
@@ -190,7 +188,6 @@ p {
 
 .hero-card,
 .card,
-.pricing-card,
 .policy-card {
   background: var(--surface);
   border: 1px solid rgba(255, 255, 255, 0.65);
@@ -291,14 +288,12 @@ p {
 }
 
 .card,
-.pricing-card,
 .policy-card {
   padding: 1.5rem;
   border-radius: var(--radius);
 }
 
 .card p,
-.pricing-card p,
 .policy-card p,
 .policy-card li {
   color: var(--muted);
@@ -308,29 +303,6 @@ p {
   min-height: 100%;
 }
 
-.section-accent {
-  background:
-    linear-gradient(180deg, rgba(33, 110, 57, 0.05), rgba(33, 110, 57, 0.1)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0.25));
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.price {
-  font-size: clamp(3rem, 5vw, 4.5rem);
-  line-height: 1;
-  color: var(--green-deep);
-  font-weight: 800;
-  margin-bottom: 1.25rem;
-}
-
-.price span {
-  font-size: 1rem;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.check-list,
 .policy-card ul {
   margin: 0;
   padding-left: 1.2rem;
@@ -376,7 +348,6 @@ p {
   border-color: rgba(33, 110, 57, 0.4);
 }
 
-.check-list li,
 .policy-card li {
   margin-bottom: 0.7rem;
 }
@@ -408,7 +379,6 @@ p {
 
 @media (max-width: 960px) {
   .hero-grid,
-  .pricing-grid,
   .split-grid,
   .feature-grid {
     grid-template-columns: 1fr;
